@@ -20,50 +20,41 @@ jobs:
       options: --privileged
 
     steps:
-      - name: Checkout your repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Update system and install basic tools
+      - name: Update system and install tools
         run: |
           xbps-install -Suy
-          xbps-install -y xtools git bash sudo
+          xbps-install -y xtools git bash
 
-      - name: Create non-root user (void-builder) and prepare environment
+      - name: Prepare void-packages and Floorp template
         run: |
-          useradd -m -s /bin/bash void-builder
-          echo "void-builder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/void-builder
+          git clone --depth=1 https://github.com/void-linux/void-packages.git /void-packages
+          cd /void-packages
 
-          # Clone void-packages as the builder user
-          su - void-builder -c '
-            git clone --depth=1 https://github.com/void-linux/void-packages.git ~/void-packages
-          '
+          mkdir -p srcpkgs/floorp
+          # Copy your template (works whether it's in floorp/ or directly as floorp/template)
+          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ 2>/dev/null || true
 
-          # Copy your Floorp template
-          su - void-builder -c '
-            mkdir -p ~/void-packages/srcpkgs/floorp
-            cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* \
-                   ~/void-packages/srcpkgs/floorp/ 2>/dev/null || true
-          '
+          # Important: Use fakechroot (works reliably in GitHub Actions Docker)
+          echo 'XBPS_CHROOT_CMD=fakechroot' >> etc/xbps-src.conf
 
-      - name: Bootstrap the build environment
+      - name: Bootstrap build environment
+        working-directory: /void-packages
         run: |
-          su - void-builder -c '
-            cd ~/void-packages
-            ./xbps-src binary-bootstrap
-          '
+          ./xbps-src binary-bootstrap
 
-      - name: Build Floorp package
+      - name: Build Floorp
+        working-directory: /void-packages
         run: |
-          su - void-builder -c '
-            cd ~/void-packages
-            ./xbps-src -j$(nproc) pkg floorp
-          '
+          ./xbps-src -j$(nproc) pkg floorp
 
-      - name: Collect built packages
+      - name: Collect packages
         run: |
           mkdir -p ./artifacts
-          cp /home/void-builder/void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
-          cp /home/void-builder/void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
+          cp /void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
+          cp /void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -74,10 +65,9 @@ jobs:
 
       - name: Build summary
         if: always()
+        working-directory: /void-packages
         run: |
-          echo "=== Build log tail ==="
-          su - void-builder -c '
-            find ~/void-packages/masterdir* -name "*.log" -exec tail -n 80 {} + 2>/dev/null || echo "No log found"
-          ' || true
+          echo "=== Last 100 lines of build log ==="
+          find masterdir* -name "*.log" -exec tail -n 100 {} + 2>/dev/null || echo "No log found"
           echo "=== Built packages ==="
-          ls -lh /home/void-builder/void-packages/hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No .xbps files found"
+          ls -lh hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No packages built"
