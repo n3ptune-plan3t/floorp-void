@@ -4,52 +4,54 @@ on:
   push:
     branches: [ main, master ]
     paths:
-      - 'floorp/template'      # adjust if your template is in srcpkgs/floorp/template
+      - 'floorp/template'
       - '.github/workflows/build-floorp.yml'
   pull_request:
     paths:
       - 'floorp/template'
-  workflow_dispatch:           # allow manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
-    # Use the glibc full image (recommended for heavy builds like browsers)
     container:
       image: ghcr.io/void-linux/void-glibc-full:latest
-      options: --privileged   # needed for xbps-src bootstrap in some cases
+      options: --privileged
 
     steps:
-      - name: Checkout repository
+      - name: Checkout your repository
         uses: actions/checkout@v4
 
-      - name: Update system and install build tools
+      - name: Update Void Linux and install basic tools
         run: |
           xbps-install -Suy
-          xbps-install -y xtools xbps-src git
+          xbps-install -y xtools git bash
 
-      - name: Prepare xbps-src environment
+      - name: Clone void-packages and prepare Floorp template
         run: |
-          # Clone void-packages if you want to build against latest master (recommended)
           git clone --depth=1 https://github.com/void-linux/void-packages.git /void-packages
           cd /void-packages
 
-          # Copy your template into the srcpkgs directory
+          # Create directory for your custom package
           mkdir -p srcpkgs/floorp
-          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ || true
-          # If your template is directly in repo root as floorp/template, adjust the path above
 
-          # Bootstrap the build environment (this can take 10-30 minutes first time)
-          ./xbps-src -m masterdir bootstrap
+          # Copy your template (adjust path if needed)
+          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ || true
+
+          # If your template is at the repo root as floorp/template:
+          # cp /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/template srcpkgs/floorp/
+
+      - name: Bootstrap the build environment
+        working-directory: /void-packages
+        run: |
+          ./xbps-src binary-bootstrap
 
       - name: Build Floorp package
         working-directory: /void-packages
         run: |
-          # Optional: enable restricted packages if needed (Floorp is not restricted)
-          # echo 'XBPS_ALLOW_RESTRICTED=yes' >> etc/xbps-src.conf
-
-          ./xbps-src -m masterdir pkg -j$(nproc) floorp
+          # Optional: allow more jobs and increase timeout if needed
+          ./xbps-src -j$(nproc) pkg floorp
 
       - name: Collect built packages
         run: |
@@ -57,18 +59,18 @@ jobs:
           cp /void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
           cp /void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
 
-      - name: Upload build artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: floorp-xbps-packages
           path: ./artifacts/
-          retention-days: 7
+          retention-days: 14
 
-      - name: Show build summary
+      - name: Build summary (always run)
         if: always()
         working-directory: /void-packages
         run: |
-          echo "=== Build log tail ==="
-          tail -n 100 /void-packages/masterdir-x86_64/builddir/floorp*/.xbps-build.log 2>/dev/null || echo "No log found"
-          echo "=== Packages built ==="
-          ls -lh ./hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No packages found"
+          echo "=== Last 100 lines of build log ==="
+          find masterdir* -name "*.log" -exec tail -n 100 {} + 2>/dev/null || echo "No build log found"
+          echo "=== Built packages ==="
+          ls -lh hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No .xbps files found"
