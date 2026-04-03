@@ -38,7 +38,7 @@ jobs:
             libdrm-devel libglvnd-devel \
             libevent-devel libvpx-devel libwebp-devel \
             libjpeg-turbo-devel libpng-devel icu-devel harfbuzz-devel zlib-devel \
-            libarchive-devel git
+            libarchive-devel git libstdc++
 
       - name: Set up Rust
         run: rustup default stable
