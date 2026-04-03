@@ -1,0 +1,191 @@
+name: Build Floorp for Void Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    env:
+      FLOORP_VERSION: 12.12.0
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Install Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang lld llvm \
+            rustup \
+            cbindgen \
+            python3 \
+            nodejs \
+            nasm yasm \
+            unzip zip \
+            pkg-config autoconf \
+            libgtk-3-dev libdbus-1-dev \
+            libx11-dev libxcomposite-dev libxdamage-dev \
+            libxext-dev libxfixes-dev libxrandr-dev libxt-dev \
+            libasound2-dev libnss3-dev libnspr4-dev \
+            libfreetype-dev libfontconfig1-dev \
+            libpango1.0-dev libatk1.0-dev libatk-bridge2.0-dev \
+            libdrm-dev libgl1-mesa-dev \
+            libevent-dev libvpx-dev libwebp-dev \
+            libjpeg-turbo8-dev libpng-dev \
+            libicu-dev libharfbuzz-dev zlib1g-dev \
+            bsdtar xbps
+
+      - name: Set up Rust
+        run: rustup default stable
+
+      # Clone void-packages so we can use xbps-src + xbps-create properly
+      - name: Clone void-packages and copy our template
+        run: |
+          git clone --depth=1 https://github.com/void-linux/void-packages.git
+          mkdir -p void-packages/srcpkgs/floorp
+          cp floorp/template void-packages/srcpkgs/floorp/template
+
+      - name: Bootstrap xbps-src
+        working-directory: void-packages
+        run: ./xbps-src binary-bootstrap
+
+      - name: Clone Floorp source
+        run: |
+          git clone --depth=1 --branch v${FLOORP_VERSION} \
+            https://github.com/Floorp-Projects/Floorp floorp-src
+          cd floorp-src && deno install
+
+      - name: Write mozconfig
+        run: |
+          JOBS=$(nproc)
+          cat > floorp-src/.mozconfig << EOF
+ac_add_options --enable-application=browser
+
+export CC=clang
+export CXX=clang++
+export AR=llvm-ar
+export NM=llvm-nm
+export RANLIB=llvm-ranlib
+ac_add_options --enable-linker=lld
+
+export CFLAGS="-march=znver1 -mtune=znver1 -O2 -pipe"
+export CXXFLAGS="-march=znver1 -mtune=znver1 -O2 -pipe"
+export RUSTFLAGS="-C target-cpu=znver1 -C opt-level=3"
+export RUSTC_OPT_LEVEL=2
+
+ac_add_options --enable-lto=thin
+ac_add_options MOZ_PGO=1
+
+ac_add_options --enable-release
+ac_add_options --enable-strip
+ac_add_options --enable-install-strip
+ac_add_options --disable-debug
+ac_add_options --disable-tests
+ac_add_options --disable-crashreporter
+ac_add_options --disable-updater
+
+ac_add_options --with-system-nss
+ac_add_options --with-system-nspr
+ac_add_options --with-system-libevent
+ac_add_options --with-system-libvpx
+ac_add_options --with-system-webp
+ac_add_options --with-system-jpeg
+ac_add_options --with-system-icu
+ac_add_options --with-system-harfbuzz
+
+ac_add_options --enable-default-toolkit=cairo-gtk3-wayland-only
+
+mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-floorp
+mk_add_options MOZ_MAKE_FLAGS="-j${JOBS}"
+EOF
+
+      - name: feles-build before-mach
+        working-directory: floorp-src
+        run: deno task feles-build build --phase before-mach
+
+      - name: mach build
+        working-directory: floorp-src
+        run: ./mach build
+
+      - name: feles-build after-mach
+        working-directory: floorp-src
+        run: deno task feles-build build --phase after-mach
+
+      - name: mach package
+        working-directory: floorp-src
+        run: ./mach package
+
+      # Stage the built browser into DESTDIR, then let xbps-src pkg do the rest.
+      # xbps-src handles all dependency metadata and package format correctly.
+      - name: Stage browser files into xbps-src DESTDIR
+        run: |
+          DESTDIR="$(pwd)/void-packages/masterdir/tmp/floorp-stage"
+          APPDIR="$DESTDIR/usr/lib/floorp"
+          mkdir -p "$APPDIR" "$DESTDIR/usr/bin" \
+                   "$DESTDIR/usr/share/applications" \
+                   "$DESTDIR/usr/share/icons/hicolor/128x128/apps"
+
+          TARBALL=$(ls floorp-src/obj-floorp/dist/floorp-*.tar.bz2 | head -1)
+          bsdtar xf "$TARBALL" -C "$APPDIR" --strip-components=1
+
+          # Wrapper script with Vega 3 / Wayland tweaks
+          cat > "$DESTDIR/usr/bin/floorp" << 'WRAPPER'
+#!/bin/sh
+export MOZ_ENABLE_WAYLAND=1
+export LIBVA_DRIVER_NAME=radeonsi
+export MOZ_DISABLE_RDD_SANDBOX=1
+export NO_AT_BRIDGE=1
+export MOZ_DBUS_REMOTE=1
+exec /usr/lib/floorp/floorp "$@"
+WRAPPER
+          chmod 755 "$DESTDIR/usr/bin/floorp"
+
+          cat > "$DESTDIR/usr/share/applications/floorp.desktop" << 'DESKTOP'
+[Desktop Entry]
+Version=1.0
+Name=Floorp
+GenericName=Web Browser
+Exec=floorp %u
+Icon=floorp
+Terminal=false
+Type=Application
+Categories=Network;WebBrowser;
+MimeType=text/html;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=floorp
+DESKTOP
+
+          [ -f "$APPDIR/browser/chrome/icons/default/default128.png" ] && \
+            cp "$APPDIR/browser/chrome/icons/default/default128.png" \
+               "$DESTDIR/usr/share/icons/hicolor/128x128/apps/floorp.png"
+
+          # Export the stage path so the next step can find it
+          echo "FLOORP_DESTDIR=$DESTDIR" >> "$GITHUB_ENV"
+
+      - name: Build xbps package with xbps-src
+        working-directory: void-packages
+        run: |
+          # Tell xbps-src to use our pre-staged DESTDIR instead of building
+          # from scratch (we already built above with our custom mozconfig).
+          # We override do_install() by setting XBPS_DESTDIR directly.
+          XBPS_DESTDIR="$FLOORP_DESTDIR" ./xbps-src pkg floorp
+
+          mkdir -p ../artifacts
+          find hostdir/binpkgs -name "floorp-*.xbps" -exec cp {} ../artifacts/ \;
+
+      - name: Upload xbps package
+        uses: actions/upload-artifact@v4
+        with:
+          name: floorp-${{ env.FLOORP_VERSION }}-x86_64
+          path: artifacts/*.xbps
+          retention-days: 30
