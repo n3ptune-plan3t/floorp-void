@@ -36,7 +36,7 @@ jobs:
             libdrm-dev libgl1-mesa-dev \
             libevent-dev libvpx-dev libwebp-dev \
             libjpeg-turbo8-dev libpng-dev libicu-dev libharfbuzz-dev zlib1g-dev \
-            bsdtar
+            libarchive-tools
 
       - name: Set up Rust
         run: rustup default stable
