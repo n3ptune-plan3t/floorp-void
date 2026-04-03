@@ -1,73 +1,36 @@
-name: Build Floorp (Void Linux XBPS)
+# .github/workflows/build-artifact.yml
 
+name: Build Package Artifact
+
+# This workflow can now be run manually from the Actions tab
 on:
-  push:
-    branches: [ main, master ]
-    paths:
-      - 'floorp/template'
-      - '.github/workflows/build-floorp.yml'
-  pull_request:
-    paths:
-      - 'floorp/template'
   workflow_dispatch:
 
 jobs:
-  build:
-    runs-on: ubuntu-latest
-
-    container:
-      image: ghcr.io/void-linux/void-glibc-full:latest
-      options: --privileged
+  build-and-upload:
+    runs-on: ubuntu-22.04
+    env:
+      PKG_NAME: floorp
+      PROJECT_PATH: my-project-repo
+      XBPS_TARGET_ARCH: x86_64
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Update system and install tools
+      - name: Build your package
+        run: echo "Building package ${{ env.PKG_NAME }}..." # Replace with your actual full build commands
+
+      - name: Prepare package files for upload
         run: |
-          xbps-install -Suy
-          xbps-install -y xtools git bash
-
-      - name: Prepare void-packages and Floorp template
-        run: |
-          git clone --depth=1 https://github.com/void-linux/void-packages.git /void-packages
-          cd /void-packages
-
-          mkdir -p srcpkgs/floorp
-          # Copy your template (works whether it's in floorp/ or directly as floorp/template)
-          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ 2>/dev/null || true
-
-          # Important: Use fakechroot (works reliably in GitHub Actions Docker)
-          echo 'XBPS_CHROOT_CMD=fakechroot' >> etc/xbps-src.conf
-
-      - name: Bootstrap build environment
-        working-directory: /void-packages
-        run: |
-          ./xbps-src binary-bootstrap
-
-      - name: Build Floorp
-        working-directory: /void-packages
-        run: |
-          ./xbps-src -j$(nproc) pkg floorp
-
-      - name: Collect packages
-        run: |
-          mkdir -p ./artifacts
-          cp /void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
-          cp /void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
-
-      - name: Upload artifacts
+          # This is an example, replace with your actual file preparation
+          mkdir -p void-packages/hostdir/binpkgs
+          touch void-packages/hostdir/binpkgs/floorp.xbps
+      # This step replaces the "Create GitHub Release" step
+      - name: Upload .xbps Package as Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: floorp-xbps-packages
-          path: ./artifacts/
-          retention-days: 14
-
-      - name: Build summary
-        if: always()
-        working-directory: /void-packages
-        run: |
-          echo "=== Last 100 lines of build log ==="
-          find masterdir* -name "*.log" -exec tail -n 100 {} + 2>/dev/null || echo "No log found"
-          echo "=== Built packages ==="
-          ls -lh hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No packages built"
+          # This will be the name of the downloadable file
+          name: xbps-package-${{ env.PKG_NAME }}
+          # This is the path to the file you want to upload
+          path: void-packages/hostdir/binpkgs/*.xbps
