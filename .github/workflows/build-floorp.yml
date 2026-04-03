@@ -8,6 +8,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    container:
+      image: voidlinux/voidlinux:latest
 
     env:
       FLOORP_VERSION: 12.12.0
@@ -23,20 +25,20 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
+          xbps-install -Syu
+          xbps-install -y \
             clang lld llvm rustup cbindgen \
             python3 nodejs nasm yasm unzip zip pkg-config autoconf \
-            libgtk-3-dev libdbus-1-dev \
-            libx11-dev libxcomposite-dev libxdamage-dev libxext-dev \
-            libxfixes-dev libxrandr-dev libxt-dev \
-            libasound2-dev libnss3-dev libnspr4-dev \
-            libfreetype-dev libfontconfig1-dev \
-            libpango1.0-dev libatk1.0-dev libatk-bridge2.0-dev \
-            libdrm-dev libgl1-mesa-dev \
-            libevent-dev libvpx-dev libwebp-dev \
-            libjpeg-turbo8-dev libpng-dev libicu-dev libharfbuzz-dev zlib1g-dev \
-            libarchive-tools
+            gtk+3-devel dbus-devel \
+            libX11-devel libXcomposite-devel libXdamage-devel libXext-devel \
+            libXfixes-devel libXrandr-devel libXt-devel \
+            alsa-lib-devel nss-devel nspr-devel \
+            freetype-devel fontconfig-devel \
+            pango-devel atk-devel at-spi2-atk-devel \
+            libdrm-devel libglvnd-devel \
+            libevent-devel libvpx-devel libwebp-devel \
+            libjpeg-turbo-devel libpng-devel icu-devel harfbuzz-devel zlib-devel \
+            libarchive-devel git
 
       - name: Set up Rust
         run: rustup default stable
