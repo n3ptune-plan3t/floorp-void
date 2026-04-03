@@ -23,41 +23,47 @@ jobs:
       - name: Checkout your repository
         uses: actions/checkout@v4
 
-      - name: Update Void Linux and install basic tools
+      - name: Update system and install basic tools
         run: |
           xbps-install -Suy
-          xbps-install -y xtools git bash
+          xbps-install -y xtools git bash sudo
 
-      - name: Clone void-packages and prepare Floorp template
+      - name: Create non-root user (void-builder) and prepare environment
         run: |
-          git clone --depth=1 https://github.com/void-linux/void-packages.git /void-packages
-          cd /void-packages
+          useradd -m -s /bin/bash void-builder
+          echo "void-builder ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/void-builder
 
-          # Create directory for your custom package
-          mkdir -p srcpkgs/floorp
+          # Clone void-packages as the builder user
+          su - void-builder -c '
+            git clone --depth=1 https://github.com/void-linux/void-packages.git ~/void-packages
+          '
 
-          # Copy your template (adjust path if needed)
-          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ || true
-
-          # If your template is at the repo root as floorp/template:
-          # cp /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/template srcpkgs/floorp/
+          # Copy your Floorp template
+          su - void-builder -c '
+            mkdir -p ~/void-packages/srcpkgs/floorp
+            cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* \
+                   ~/void-packages/srcpkgs/floorp/ 2>/dev/null || true
+          '
 
       - name: Bootstrap the build environment
-        working-directory: /void-packages
         run: |
-          ./xbps-src binary-bootstrap
+          su - void-builder -c '
+            cd ~/void-packages
+            ./xbps-src binary-bootstrap
+          '
 
       - name: Build Floorp package
-        working-directory: /void-packages
         run: |
-          # Optional: allow more jobs and increase timeout if needed
-          ./xbps-src -j$(nproc) pkg floorp
+          su - void-builder -c '
+            cd ~/void-packages
+            ./xbps-src -j$(nproc) pkg floorp
+          '
 
       - name: Collect built packages
         run: |
           mkdir -p ./artifacts
-          cp /void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
-          cp /void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
+          cp /home/void-builder/void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
+          cp /home/void-builder/void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -66,11 +72,12 @@ jobs:
           path: ./artifacts/
           retention-days: 14
 
-      - name: Build summary (always run)
+      - name: Build summary
         if: always()
-        working-directory: /void-packages
         run: |
-          echo "=== Last 100 lines of build log ==="
-          find masterdir* -name "*.log" -exec tail -n 100 {} + 2>/dev/null || echo "No build log found"
+          echo "=== Build log tail ==="
+          su - void-builder -c '
+            find ~/void-packages/masterdir* -name "*.log" -exec tail -n 80 {} + 2>/dev/null || echo "No log found"
+          ' || true
           echo "=== Built packages ==="
-          ls -lh hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No .xbps files found"
+          ls -lh /home/void-builder/void-packages/hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No .xbps files found"
