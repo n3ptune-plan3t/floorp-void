@@ -1,131 +1,74 @@
-name: Build Floorp for Void Linux
+name: Build Floorp (Void Linux XBPS)
 
 on:
-  workflow_dispatch:
   push:
-    branches: [main]
+    branches: [ main, master ]
+    paths:
+      - 'floorp/template'      # adjust if your template is in srcpkgs/floorp/template
+      - '.github/workflows/build-floorp.yml'
+  pull_request:
+    paths:
+      - 'floorp/template'
+  workflow_dispatch:           # allow manual trigger
 
 jobs:
   build:
-    runs-on: ubuntu-24.04
-    container:
-      image: voidlinux/voidlinux:latest
+    runs-on: ubuntu-latest
 
-    env:
-      FLOORP_VERSION: 12.12.0
+    # Use the glibc full image (recommended for heavy builds like browsers)
+    container:
+      image: ghcr.io/void-linux/void-glibc-full:latest
+      options: --privileged   # needed for xbps-src bootstrap in some cases
 
     steps:
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Install build dependencies
+      - name: Update system and install build tools
         run: |
-          xbps-install -Syu
-          xbps-install -y \
-            clang lld llvm rustup cbindgen \
-            python3 nodejs nasm yasm unzip zip pkg-config autoconf \
-            gtk+3-devel dbus-devel \
-            libX11-devel libXcomposite-devel libXdamage-devel libXext-devel \
-            libXfixes-devel libXrandr-devel libXt-devel \
-            alsa-lib-devel nss-devel nspr-devel \
-            freetype-devel fontconfig-devel \
-            pango-devel atk-devel at-spi2-atk-devel \
-            libdrm-devel libglvnd-devel \
-            libevent-devel libvpx-devel libwebp-devel \
-            libjpeg-turbo-devel libpng-devel icu-devel harfbuzz-devel zlib-devel \
-            libarchive-devel git libstdc++
+          xbps-install -Suy
+          xbps-install -y xtools xbps-src git
 
-      - name: Set up Rust
-        run: rustup default stable
-
-      - name: Clone void-packages and copy template
+      - name: Prepare xbps-src environment
         run: |
-          git clone --depth=1 https://github.com/void-linux/void-packages.git
-          mkdir -p void-packages/srcpkgs/floorp
-          cp floorp/template void-packages/srcpkgs/floorp/template
+          # Clone void-packages if you want to build against latest master (recommended)
+          git clone --depth=1 https://github.com/void-linux/void-packages.git /void-packages
+          cd /void-packages
 
-      - name: Bootstrap xbps-src
-        working-directory: void-packages
-        run: ./xbps-src binary-bootstrap
+          # Copy your template into the srcpkgs directory
+          mkdir -p srcpkgs/floorp
+          cp -a /__w/${{ github.event.repository.name }}/${{ github.event.repository.name }}/floorp/* srcpkgs/floorp/ || true
+          # If your template is directly in repo root as floorp/template, adjust the path above
 
-      - name: Clone Floorp source
+          # Bootstrap the build environment (this can take 10-30 minutes first time)
+          ./xbps-src -m masterdir bootstrap
+
+      - name: Build Floorp package
+        working-directory: /void-packages
         run: |
-          git clone --depth=1 --branch v${{ env.FLOORP_VERSION }} \
-            https://github.com/Floorp-Projects/Floorp floorp-src
-          cd floorp-src && deno install
+          # Optional: enable restricted packages if needed (Floorp is not restricted)
+          # echo 'XBPS_ALLOW_RESTRICTED=yes' >> etc/xbps-src.conf
 
-      - name: Write mozconfig
-        working-directory: floorp-src
+          ./xbps-src -m masterdir pkg -j$(nproc) floorp
+
+      - name: Collect built packages
         run: |
-          cat > .mozconfig << 'MOZCONFIG'
-          ac_add_options --enable-application=browser
+          mkdir -p ./artifacts
+          cp /void-packages/hostdir/binpkgs/*/*.xbps ./artifacts/ 2>/dev/null || true
+          cp /void-packages/hostdir/binpkgs/*/*-dbg*.xbps ./artifacts/ 2>/dev/null || true
 
-          export CC=clang
-          export CXX=clang++
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export RANLIB=llvm-ranlib
-          ac_add_options --enable-linker=lld
-
-          export CFLAGS="-march=znver1 -mtune=znver1 -O2 -pipe"
-          export CXXFLAGS="-march=znver1 -mtune=znver1 -O2 -pipe"
-          export RUSTFLAGS="-C target-cpu=znver1 -C opt-level=3"
-          export RUSTC_OPT_LEVEL=2
-
-          ac_add_options --enable-lto=thin
-          ac_add_options MOZ_PGO=1
-
-          ac_add_options --enable-release
-          ac_add_options --enable-strip
-          ac_add_options --enable-install-strip
-          ac_add_options --disable-debug
-          ac_add_options --disable-tests
-          ac_add_options --disable-crashreporter
-          ac_add_options --disable-updater
-
-          ac_add_options --with-system-nss
-          ac_add_options --with-system-nspr
-          ac_add_options --with-system-libevent
-          ac_add_options --with-system-libvpx
-          ac_add_options --with-system-webp
-          ac_add_options --with-system-jpeg
-          ac_add_options --with-system-icu
-          ac_add_options --with-system-harfbuzz
-
-          ac_add_options --enable-default-toolkit=cairo-gtk3-wayland-only
-
-          mk_add_options MOZ_OBJDIR=@TOPSRCDIR@/obj-floorp
-          mk_add_options MOZ_MAKE_FLAGS="-j$(nproc)"
-          MOZCONFIG
-
-      - name: feles-build before-mach
-        working-directory: floorp-src
-        run: deno task feles-build build --phase before-mach
-
-      - name: mach build
-        working-directory: floorp-src
-        run: ./mach build
-
-      - name: feles-build after-mach
-        working-directory: floorp-src
-        run: deno task feles-build build --phase after-mach
-
-      - name: mach package
-        working-directory: floorp-src
-        run: ./mach package
-
-      - name: Build xbps package
-        working-directory: void-packages
-        run: ./xbps-src pkg floorp
-
-      - name: Collect and upload artifact
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: floorp-${{ env.FLOORP_VERSION }}-x86_64
-          path: void-packages/hostdir/binpkgs/floorp-*.xbps
-          retention-days: 30
+          name: floorp-xbps-packages
+          path: ./artifacts/
+          retention-days: 7
+
+      - name: Show build summary
+        if: always()
+        working-directory: /void-packages
+        run: |
+          echo "=== Build log tail ==="
+          tail -n 100 /void-packages/masterdir-x86_64/builddir/floorp*/.xbps-build.log 2>/dev/null || echo "No log found"
+          echo "=== Packages built ==="
+          ls -lh ./hostdir/binpkgs/*/*.xbps 2>/dev/null || echo "No packages found"
